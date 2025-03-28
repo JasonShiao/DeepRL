@@ -12,6 +12,8 @@ class Logger:
         self._summ_writer = SummaryWriter(log_dir, flush_secs=1, max_queue=1)
 
         self.reward_history = []
+        self.actor_loss_history = []
+        self.critic_loss_history = []
 
     def log_reward(self, reward, step):
         self.reward_history.append(reward)
@@ -19,6 +21,10 @@ class Logger:
 
     def log_scalar(self, scalar, name, step):
         self._summ_writer.add_scalar(name, scalar, step)
+        
+    def log_actor_critic_loss(self, actor_loss, critic_loss, step):
+        self.critic_loss_history.append(critic_loss)
+        self.actor_loss_history.append(actor_loss)
 
     #def log_scalars(self, scalar_dict, group_name, step, phase):
     #    """Will log all scalars in the same plot."""

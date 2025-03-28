@@ -17,6 +17,16 @@ class ReplayBuffer(object):
         self.device = device
 
     def add(self, state, action, reward, next_state, done):
+        """ 
+        Allows both single data point and batch data to be added to the replay buffer.
+
+        Args:
+            state (_type_): _description_
+            action (_type_): _description_
+            reward (_type_): _description_
+            next_state (_type_): _description_
+            done (function): _description_
+        """
         # Convert inputs to numpy arrays
         state = np.asarray(state)
         action = np.asarray(action)
@@ -47,6 +57,14 @@ class ReplayBuffer(object):
 
 
     def sample(self, batch_size):
+        """_summary_
+
+        Args:
+            batch_size (_type_): _description_
+
+        Returns:
+            tuple[torch Tensors]: state, action, reward, next_state, done
+        """
         ind = np.random.randint(0, self.size, size=batch_size)
  
         return (
