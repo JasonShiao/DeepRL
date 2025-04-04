@@ -1,4 +1,4 @@
-from rl_physics.policies.MLP_policy import MLPDeterministicPolicy
+from rl_physics.policies.MLP_policy import MLP_Pi_FC
 from rl_physics.value_functions.MLP_critic import MLPTwinCritic
 from .base_agent import BaseAgent
 import torch
@@ -21,9 +21,12 @@ class TD3Agent(BaseAgent):
         # init vars
         self.env = env
         self.agent_params = agent_params
+        self.action_range = self.agent_params['max_action'] - self.agent_params['min_action']
+        self.action_min = self.agent_params['min_action']
+        self.action_max = self.agent_params['max_action']
 
         # actor/policy
-        self.actor = MLPDeterministicPolicy(
+        self.actor = MLP_Pi_FC(
             self.agent_params['ac_dim'],
             self.agent_params['ob_dim'],
             self.agent_params['n_layers'],
@@ -68,9 +71,12 @@ class TD3Agent(BaseAgent):
                 torch.randn_like(ac_na) * self.agent_params['policy_noise']
             ).clamp(-self.agent_params['noise_clip'], self.agent_params['noise_clip'])
             
-            next_ac_na = (
-                self.target_actor(next_ob_no) + noise
-            ).clamp(-self.agent_params['max_action'], self.agent_params['max_action'])
+            #next_ac_na = (
+            #    self.target_actor(next_ob_no) + noise
+            #).clamp(-self.agent_params['max_action'], self.agent_params['max_action'])
+            next_ac_na = self._scale_action(
+                self.target_actor(next_ob_no, deterministic=True, with_logprob=False)[0] + noise
+            )
             
             # 2. Compute target Q-value from critic network with action from policy network
             target_q1, target_q2 = self.target_critic(next_ob_no, next_ac_na)
@@ -91,7 +97,9 @@ class TD3Agent(BaseAgent):
         if self.total_iters % self.agent_params['policy_freq'] == 0:
             # Update policy (actor) with one of the critics only
             self.actor.optimizer.zero_grad()
-            a_loss = -self.critic.Q1(ob_no, self.actor(ob_no)).mean() # Gradient ascent
+            ac = self._scale_action(self.actor(ob_no, deterministic=True, with_logprob=False)[0]
+                                    )
+            a_loss = -self.critic.Q1(ob_no, ac).mean() # Gradient ascent
             a_loss.backward()
             # Stablize the training
             #nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
@@ -110,10 +118,16 @@ class TD3Agent(BaseAgent):
         #print(f"critic loss = {c_loss.item()}, actor loss = {a_loss.item()}")
         return c_loss.item(), a_loss.item() if a_loss is not None else None
     
-    def get_action(self, obs):
-        obs_tensor = ptu.from_numpy(obs)
-        self.target_actor.eval()
+    def _scale_action(self, action: torch.FloatTensor) -> torch.Tensor:
+        """
+        Scale action (tanh) to the range of the environment.
+        """
+        return action * self.action_range / 2 + (self.action_min + self.action_max) / 2
+    
+    def get_action(self, obs_tensor, tensor):        
         with torch.no_grad():
-            action_tensor = self.target_actor(obs_tensor)
-        self.target_actor.train()
+            action_tensor = self._scale_action(self.actor(obs_tensor, deterministic=True, with_logprob=False)[0])
+            
+        if tensor:
+            return action_tensor
         return ptu.to_numpy(action_tensor)

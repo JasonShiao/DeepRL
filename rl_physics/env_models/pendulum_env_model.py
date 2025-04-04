@@ -51,8 +51,8 @@ class PendulumEnvModel(BaseEnvModel):
 
         return next_state_batch, reward_batch
     
-    def _angle_normalize(self, x):
-        return ((x + np.pi) % (2 * np.pi)) - np.pi
+    #def _angle_normalize(self, x):
+    #    return ((x + np.pi) % (2 * np.pi)) - np.pi
     
     def train(self, states, actions, rewards, next_states):
         """

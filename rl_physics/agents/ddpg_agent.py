@@ -21,6 +21,9 @@ class DDPGAgent(BaseAgent):
         # init vars
         self.env = env
         self.agent_params = agent_params
+        self.action_range = self.agent_params['max_action'] - self.agent_params['min_action']
+        self.action_min = self.agent_params['min_action']
+        self.action_max = self.agent_params['max_action']
 
         # actor/policy
         self.actor = MLPDeterministicPolicy(
@@ -64,9 +67,7 @@ class DDPGAgent(BaseAgent):
                 
         with torch.no_grad():
             # 1. Get next action from policy (next state) and clip it            
-            next_ac_na = (
-                self.target_actor(next_ob_no)
-            ).clamp(-self.agent_params['max_action'], self.agent_params['max_action'])
+            next_ac_na = self._scale_action(self.target_actor(next_ob_no))
             
             # 2. Compute target Q-value from critic network with action from policy network
             target_q = self.target_critic(next_ob_no, next_ac_na)
@@ -84,7 +85,9 @@ class DDPGAgent(BaseAgent):
         
         # 3. Update policy (actor) with one of the critics only
         self.actor.optimizer.zero_grad()
-        a_loss = -self.critic.Q1(ob_no, self.actor(ob_no)).mean() # Gradient ascent
+        a_loss = -self.critic.Q1(ob_no, 
+                                 self._scale_action(self.actor(ob_no))
+                                 ).mean() # Gradient ascent
         a_loss.backward()
         # Stablize the training
         #nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
@@ -101,10 +104,17 @@ class DDPGAgent(BaseAgent):
         #print(f"critic loss = {c_loss.item()}, actor loss = {a_loss.item()}")
         return c_loss.item(), a_loss.item()
     
-    def get_action(self, obs):
-        obs_tensor = ptu.from_numpy(obs)
-        self.target_actor.eval()
+    def _scale_action(self, action: torch.FloatTensor) -> torch.Tensor:
+        """
+        Scale action (tanh) to the range of the environment.
+        """
+        return action * self.action_range / 2 + (self.action_min + self.action_max) / 2
+    
+    def get_action(self, obs_tensor, tensor):
         with torch.no_grad():
-            action_tensor = self.target_actor(obs_tensor)
-        self.target_actor.train()
+            action_tensor = self._scale_action(self.actor(obs_tensor))
+        
+        if tensor:
+            return action_tensor
+        
         return ptu.to_numpy(action_tensor)

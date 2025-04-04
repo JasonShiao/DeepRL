@@ -7,7 +7,7 @@ class BaseAgent(object):
         """Return a dictionary of logging information."""
         raise NotImplementedError
     
-    def get_action(self, obs):
+    def get_action(self, obs, tensor):
         """Return the action to take in the environment."""
         raise NotImplementedError
 

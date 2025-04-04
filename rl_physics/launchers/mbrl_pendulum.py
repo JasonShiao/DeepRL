@@ -61,7 +61,7 @@ if __name__ == "__main__":
 
     hyperparams =  {
         'add_noise': True,
-        'start_steps': 500,
+        'warm_up_steps': 1000,
         'noise_decay': 1.0,
         'noise_decay_interval': 5000,
         'update_after': 250,
@@ -85,7 +85,8 @@ if __name__ == "__main__":
         'learning_rate': 2e-3,
         'policy_noise': 0.01,
         'noise_clip': 0.03,
-        'max_action': env.action_space.high[0], # TODO: handle multi-dimensional actions
+        'max_action': float(env.action_space.high[0]), # TODO: handle multi-dimensional actions
+        'min_action': float(env.action_space.low[0]), # TODO: handle multi-dimensional actions
         'gamma': 0.99,
         'polyak': 0.995,
         'policy_freq': 2,
@@ -131,7 +132,7 @@ if __name__ == "__main__":
         obs, info = eval_env.reset()
         done = False
         while not done:
-            action = rl_agent.get_action(obs)
+            action = rl_agent.get_action(ptu.from_numpy(obs), tensor=False)
             action = action.clip(-2, 2)  # Clip action to valid range
             obs, reward, terminated, truncated, info = eval_env.step(action)
             print(f"Action: {action}, Reward: {reward}, Next Obs: {obs}")

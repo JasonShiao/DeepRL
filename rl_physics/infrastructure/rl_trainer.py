@@ -50,7 +50,7 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
             torch.manual_seed(seed)
         
         self.add_noise = hyperparams['add_noise']
-        self.start_steps = hyperparams['start_steps']
+        self.warm_up_steps = hyperparams['warm_up_steps']
         self.noise_decay = hyperparams['noise_decay']
         self.update_after = hyperparams['update_after']
         self.update_every = hyperparams['update_every']
@@ -72,21 +72,20 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
         for epoch_idx in range(hyperparams['epoch']):
             for _ in range(hyperparams['step_per_epoch']): # TBD: epoch?
                 # 1. Get action (off-policy for the first n steps, then use policy)
-                if step_count < self.start_steps: # Encourage exploration in the beginning
+                if step_count < self.warm_up_steps: # Encourage exploration in the beginning
                     ac = env.action_space.sample()
                 else:
                     with torch.no_grad():
                         if self.add_noise:
                             ac_tensor = (
-                                rl_agent.actor(ptu.from_numpy(obs_))
+                                rl_agent.get_action(ptu.from_numpy(obs_), tensor=True)
                                 + torch.normal(0, self.action_max * noise_std_dev, size=(env.action_space.shape[0],))
                             ).clamp(self.action_min, self.action_max)
                             
                             if step_count % hyperparams['noise_decay_interval'] == 0:  # Decay every 5000 steps
                                 noise_std_dev *= self.noise_decay
                         else:
-                            ac_tensor = rl_agent.actor(ptu.from_numpy(obs_))
-                            ac_tensor = ac_tensor.clamp(self.action_min, self.action_max)
+                            ac_tensor = rl_agent.get_action(ptu.from_numpy(obs_), tensor=True)
                         ac = ptu.to_numpy(ac_tensor)
 
                 # 2. Execute action and get next observation
@@ -129,9 +128,7 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
                                                                                       self.batch_size)
                             # Continue from the next_obs for one step using the environment model and curren policy
                             with torch.no_grad():
-                                ac_batch_tensor = (
-                                    rl_agent.actor(obs_batch_tensor) 
-                                ).clamp(self.action_min, self.action_max)
+                                ac_batch_tensor = rl_agent.get_action(obs_batch_tensor, tensor=True)
                                 # Predict next state and reward using the environment model
                                 next_obs_pred_batch, rews_pred_batch = env_model.step(ptu.to_numpy(obs_batch_tensor), 
                                                                                      ptu.to_numpy(ac_batch_tensor))
@@ -198,7 +195,7 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
             episode_reward = 0
 
             while not done:
-                action = rl_agent.get_action(obs)
+                action = rl_agent.get_action(ptu.from_numpy(obs), tensor=False)
                 next_obs, reward, terminated, truncated, _ = test_env.step(action)
                 episode_reward += reward
                 done = terminated or truncated
