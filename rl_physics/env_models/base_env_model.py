@@ -324,7 +324,7 @@ class MLPDeterministicEnv(nn.Module):
 
         pred_next_obs, pred_rew = self(obs, acs)
 
-        loss = F.mse_loss(pred_next_obs, next_obs) + F.mse_loss(pred_rew, rew)
+        loss = F.l1_loss(pred_next_obs, next_obs) + F.l1_loss(pred_rew, rew)
 
         self.optimizer.zero_grad()
         loss.backward()
