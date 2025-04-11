@@ -55,6 +55,17 @@ class ReplayBuffer(object):
         self.ptr = (self.ptr + batch_size) % self.max_size
         self.size = min(self.size + batch_size, self.max_size)
 
+    def trim(self, size):
+        """Trims the replay buffer to the specified size.
+
+        Args:
+            size (_type_): _description_
+        """
+        if size > self.max_size:
+            raise ValueError("Size cannot be larger than max_size")
+        self.size = size
+        self.ptr = 0
+
 
     def sample(self, batch_size):
         """_summary_

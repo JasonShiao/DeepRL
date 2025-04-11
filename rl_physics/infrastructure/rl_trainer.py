@@ -31,7 +31,7 @@ class MBRL_TrainerBase(object):
             gpu_id=self.base_params['which_gpu']
         )
     
-    def run_training_loop(self, rl_agent, env, test_env, env_model, replay_buffer_truth, replay_buffer_sim, hyperparams):
+    def run_training_loop(self, rl_agent, env, test_env, env_model, replay_buffer_truth, replay_buffer_augmented, hyperparams):
         raise NotImplementedError
 
 
@@ -41,7 +41,7 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
         self.debug_verbose = 0
         
 
-    def run_training_loop(self, rl_agent: BaseAgent, env: Env, test_env: Env, env_model, replay_buffer_truth, replay_buffer_sim, hyperparams):
+    def run_training_loop(self, rl_agent: BaseAgent, env: Env, test_env: Env, env_model, replay_buffer_truth, replay_buffer_augmented, hyperparams):
         # 0. Handle hyperparams init
         # Set random seeds
         if 'seed' in hyperparams:
@@ -58,6 +58,8 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
         
         self.action_max = env.action_space.high[0] # TODO: handle multi-dimensional actions
         self.action_min = env.action_space.low[0] # TODO: handle multi-dimensional actions
+        
+        usemodel = False # True # False
         
         # TODO: remove hard coded values
         noise_std_dev = 0.1 # (self.env.action_space.high - self.env.action_space.low) / 6
@@ -93,11 +95,10 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
                 done = terminated or truncated
                 # print shape of all variables
                 #print(f"obs: {ptu.from_numpy(obs_).shape}, act: {ac_tensor.shape}, rew: {(rew)}, next_obs: {next_obs.shape}, done: {(done)}")
-                # 3. Store (s, a, r, s', done) in replay buffer
-                replay_buffer_truth.add(obs_, 
-                                        ac, 
-                                        rew, 
-                                        next_obs, 
+                # 3. Store (s, a, r, s', done) to "both" replay buffers
+                replay_buffer_truth.add(obs_, ac, rew, next_obs, 
+                                        1 if done else 0)
+                replay_buffer_augmented.add(obs_, ac, rew, next_obs, 
                                         1 if done else 0)
 
                 if done:
@@ -106,26 +107,65 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
                     obs_ = next_obs
                     
                 # =========== Model-based section ==============
-                if step_count % hyperparams['learn_env_model_every'] == 0:
+                # 4. Train the environment model
+                if step_count % hyperparams['learn_env_model_every'] == 0 and usemodel:
                     if step_count >= hyperparams['learn_env_model_after']:
-                        # Sample a batch of data from truth replay buffer
-                        obs_batch_tensor, ac_batch_tensor, rews_batch_tensor, \
-                            next_obs_batch_tensor, done_batch_tensor = replay_buffer_truth.sample(self.batch_size)
-                        # Update/Train the environment model
-                        train_report = env_model.train(obs_batch_tensor, ac_batch_tensor, 
-                                                       rews_batch_tensor, next_obs_batch_tensor)
-                        if self.debug_verbose > 0:
-                            print(f"train_report: {train_report}, {train_report['Env Training Loss']}")
-                        if np.isinf(env_model_data_loss):
-                            env_model_data_loss = train_report['Env Training Loss']
-                        else:
-                            env_model_data_loss = 0.95 * env_model_data_loss + 0.05 * train_report['Env Training Loss']
+                        max_model_iter = 200
+                        for _ in range(max_model_iter):
+                            # Sample a batch of data from truth replay buffer
+                            obs_batch_tensor, ac_batch_tensor, rews_batch_tensor, \
+                                next_obs_batch_tensor, done_batch_tensor = replay_buffer_truth.sample(self.batch_size)
+                            # Update/Train the environment model
+                            train_report = env_model.train(obs_batch_tensor, ac_batch_tensor, 
+                                                        rews_batch_tensor, next_obs_batch_tensor)
+                            if self.debug_verbose > 0:
+                                print(f"train_report: {train_report}, {train_report['Env Training Loss']}")
+                            if np.isinf(env_model_data_loss):
+                                env_model_data_loss = train_report['Env Training Loss']
+                            else:
+                                env_model_data_loss = 0.95 * env_model_data_loss + 0.05 * train_report['Env Training Loss']
+                            
+                            if env_model_data_loss < hyperparams['env_model_loss_thresh']:
+                                break
+
+                        print(f"env_model_data_loss: {env_model_data_loss}, env_model_loss_thresh: {hyperparams['env_model_loss_thresh']}")
+                # ============================================== 
+                
+                # 5. Determine if it's time to update agent with "real" replay buffer
+                #if len(self.replay_buffer.buffer) > self.batch_size:
+                if step_count >= self.update_after and (step_count % self.update_every == 0):
+                    # Perform n updates (currently set it the same number as the update_every)
+                    c_loss_avg = 0
+                    a_loss_avg = 0
+                    actor_update_count = 0
+                    for _ in range(self.update_every):
+                        # 1. Sample a batch of data from replay buffer
+                        obs_batch_tensor, ac_batch_tensor, rews_batch_tensor, next_obs_batch_tensor, done_batch_tensor \
+                            = replay_buffer_truth.sample(self.batch_size)
+                        c_loss, a_loss = rl_agent.update(obs_batch_tensor, ac_batch_tensor, 
+                                                         rews_batch_tensor, next_obs_batch_tensor, 
+                                                         done_batch_tensor)
+                        c_loss_avg += c_loss
+                        if a_loss is not None:
+                            actor_update_count += 1
+                            a_loss_avg += a_loss
+
+                    c_loss = c_loss_avg / self.update_every
+                    a_loss = a_loss_avg / actor_update_count
+                    self.logger.log_actor_critic_loss(a_loss, c_loss, step_count)
+                    # TODO: sum loss?
+                    #print(f"c_loss: {c_loss}, a_loss: {a_loss}")
+                
+                # =========== Model-based section ==============
+                # 6. If model is accurate enough, use it to augment the augment replay buffer and train the agent
+                if step_count % hyperparams['learn_env_model_every'] == 0 and step_count >= hyperparams['learn_env_model_after'] and usemodel:
+                    #print(f"env_model_data_loss: {env_model_data_loss}, env_model_loss_thresh: {hyperparams['env_model_loss_thresh']}")
                     if env_model_data_loss < hyperparams['env_model_loss_thresh']:
-                        for _ in range(hyperparams['env_model_predict_steps']):
-                            # Sample a batch of data from both replay buffer (ratio based on the size of each buffer)
-                            _, _, _, obs_batch_tensor, _ = self._sample_mixed_batches(replay_buffer_truth, 
-                                                                                      replay_buffer_sim, 
-                                                                                      self.batch_size)
+                        # num interaction
+                        fake_interact_count = 1000
+                        _, _, _, obs_batch_tensor, _ = replay_buffer_truth.sample(self.batch_size)
+                        for t in range(fake_interact_count):
+                            # Sample a batch of data from real replay buffer
                             # Continue from the next_obs for one step using the environment model and curren policy
                             with torch.no_grad():
                                 ac_batch_tensor = rl_agent.get_action(obs_batch_tensor, tensor=True)
@@ -137,53 +177,50 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
                                                        rews_pred_batch, next_obs_pred_batch)
                                     for obs, ac, rew_pred, next_obs_pred in zipped_batch:
                                         print(f"obs: {obs}, ac: {ac}, rew_pred: {rew_pred}, next_obs_pred: {next_obs_pred}")
-                            # Store (s, a, r, s', done) in replay buffer
-                            replay_buffer_sim.add(ptu.to_numpy(obs_batch_tensor), 
+                            # Store (s, a, r, s', done) in augmented replay buffer only
+                            replay_buffer_augmented.add(ptu.to_numpy(obs_batch_tensor), 
                                                 ptu.to_numpy(ac_batch_tensor), 
                                                 rews_pred_batch.reshape(-1,1), 
                                                 next_obs_pred_batch, 
                                                 np.zeros((self.batch_size,)).reshape(-1,1))
-                # ============================================== 
+                            if t % hyperparams['env_model_predict_steps'] == 0:
+                                _, _, _, obs_batch_tensor, _ = replay_buffer_truth.sample(self.batch_size)
 
-                # 5. Determine if it's time to update
-                #if len(self.replay_buffer.buffer) > self.batch_size:
-                if step_count >= self.update_after and (step_count % self.update_every == 0):
-                    # Perform n updates (currently set it the same number as the update_every)
-                    for _ in range(self.update_every):
-                        # 1. Sample a batch of data from replay buffer
-                        obs_batch_tensor, ac_batch_tensor, rews_batch_tensor, next_obs_batch_tensor, done_batch_tensor \
-                            = self._sample_mixed_batches(replay_buffer_truth, replay_buffer_sim, self.batch_size)
-                        c_loss, a_loss = rl_agent.update(obs_batch_tensor, ac_batch_tensor, 
-                                                         rews_batch_tensor, next_obs_batch_tensor, 
-                                                         done_batch_tensor)
-                    # TODO: sum loss?
-                    print(f"c_loss: {c_loss}, a_loss: {a_loss}")
+                        
+                        # Train agent using the augmented replay buffer
+                        c_loss_avg = 0
+                        a_loss_avg = 0
+                        actor_update_count = 0
+                        for _ in range(100):
+                            # 1. Sample a batch of data from replay buffer
+                            obs_batch_tensor, ac_batch_tensor, rews_batch_tensor, next_obs_batch_tensor, done_batch_tensor \
+                                = replay_buffer_augmented.sample(self.batch_size)
+                            c_loss, a_loss = rl_agent.update(obs_batch_tensor, ac_batch_tensor, 
+                                                            rews_batch_tensor, next_obs_batch_tensor, 
+                                                            done_batch_tensor)
+                            c_loss_avg += c_loss
+                            if a_loss is not None:
+                                actor_update_count += 1
+                                a_loss_avg += a_loss
 
-                    # Test/Evaluate the agent with test_env (run for 5 episodes)
+                        c_loss = c_loss_avg / self.update_every
+                        a_loss = a_loss_avg / actor_update_count
+                        self.logger.log_actor_critic_loss(a_loss, c_loss, step_count)
+                        # TODO: sum loss?
+                        #print(f"c_loss: {c_loss}, a_loss: {a_loss}")
+                        
+                        # Immediatedly discard the simulated part from augmented replay buffer
+                        replay_buffer_augmented.trim(replay_buffer_truth.size)
+                # ==============================================
+                
+                
+                # Test/Evaluate the agent with test_env (run for 5 episodes)
+                # TODO: Check time to evaluate
+                if step_count % 1500 == 0:
                     self._evaluate_agent(rl_agent, test_env, num_episodes=5, step_idx=step_count)
 
+
                 step_count += 1
-            
-
-    def _sample_mixed_batches(self, replay_buffer_truth, replay_buffer_sim, batch_size):
-        total_size = replay_buffer_truth.size + replay_buffer_sim.size
-        buffer_ratio = replay_buffer_truth.size / total_size if total_size > 0 else 1.0
-
-        num_from_truth = round(batch_size * buffer_ratio)
-        num_from_sim = batch_size - num_from_truth
-
-        batch_obs, batch_ac, batch_rews, batch_next_obs, batch_done = replay_buffer_truth.sample(num_from_truth)
-
-        if num_from_sim > 0 and replay_buffer_sim.size > 0:
-            batch_obs_sim, batch_ac_sim, batch_rews_sim, batch_next_obs_sim, batch_done_sim = replay_buffer_sim.sample(num_from_sim)
-
-            batch_obs = torch.cat((batch_obs, batch_obs_sim), dim=0)
-            batch_ac = torch.cat((batch_ac, batch_ac_sim), dim=0)
-            batch_rews = torch.cat((batch_rews, batch_rews_sim), dim=0)
-            batch_next_obs = torch.cat((batch_next_obs, batch_next_obs_sim), dim=0)
-            batch_done = torch.cat((batch_done, batch_done_sim), dim=0)
-
-        return batch_obs, batch_ac, batch_rews, batch_next_obs, batch_done
 
     def _evaluate_agent(self, rl_agent, test_env, num_episodes=5, step_idx=0):
         total_rewards = []
