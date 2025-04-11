@@ -85,6 +85,19 @@ class ReplayBuffer(object):
             torch.FloatTensor(self.next_state[ind]).to(self.device),
             torch.FloatTensor(self.done[ind]).to(self.device)
        ) 
+        
+    def sample_next_states(self, batch_size):
+        """_summary_
+
+        Args:
+            batch_size (_type_): _description_
+
+        Returns:
+            tuple[torch Tensors]: state, action, reward, next_state, done
+        """
+        ind = np.random.randint(0, self.size, size=batch_size)
+ 
+        return torch.FloatTensor(self.next_state[ind]).to(self.device)
     
     def save(self, filename):
         np.savez(filename, 

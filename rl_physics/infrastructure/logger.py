@@ -12,19 +12,39 @@ class Logger:
         self._summ_writer = SummaryWriter(log_dir, flush_secs=1, max_queue=1)
 
         self.reward_history = []
+        self.reward_std_history = []
+        self.reward_steps = []
+        self.actor_critic_loss_steps = []
         self.actor_loss_history = []
+        self.actor_loss_std_history = []
         self.critic_loss_history = []
+        self.critic_loss_std_history = []
 
-    def log_reward(self, reward, step):
+    def log_reward(self, reward, reward_std, step):
         self.reward_history.append(reward)
+        self.reward_std_history.append(reward_std)
+        self.reward_steps.append(step)
         self._summ_writer.add_scalar('reward', reward, step)
 
     def log_scalar(self, scalar, name, step):
         self._summ_writer.add_scalar(name, scalar, step)
         
-    def log_actor_critic_loss(self, actor_loss, critic_loss, step):
+    def log_actor_critic_loss(self, actor_loss, actor_loss_std, critic_loss, critic_loss_std, step):
         self.critic_loss_history.append(critic_loss)
+        self.critic_loss_std_history.append(critic_loss_std)
         self.actor_loss_history.append(actor_loss)
+        self.actor_loss_std_history.append(actor_loss_std)
+        self.actor_critic_loss_steps.append(step)
+        self._summ_writer.add_scalar('actor_loss', actor_loss, step)
+        self._summ_writer.add_scalar('critic_loss', critic_loss, step)
+
+    def get_reward_history(self):
+        return np.array(self.reward_history), np.array(self.reward_std_history), np.array(self.reward_steps)
+    def get_actor_loss_history(self):
+        return np.array(self.actor_loss_history), np.array(self.actor_loss_std_history), np.array(self.actor_critic_loss_steps)
+    def get_critic_loss_history(self):
+        return np.array(self.critic_loss_history), np.array(self.critic_loss_std_history), np.array(self.actor_critic_loss_steps)
+    
 
     #def log_scalars(self, scalar_dict, group_name, step, phase):
     #    """Will log all scalars in the same plot."""

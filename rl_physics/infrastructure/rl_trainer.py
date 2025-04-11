@@ -59,7 +59,7 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
         self.action_max = env.action_space.high[0] # TODO: handle multi-dimensional actions
         self.action_min = env.action_space.low[0] # TODO: handle multi-dimensional actions
         
-        usemodel = False # True # False
+        self.usemodel = hyperparams['usemodel'] # True # False
         
         # TODO: remove hard coded values
         noise_std_dev = 0.1 # (self.env.action_space.high - self.env.action_space.low) / 6
@@ -98,8 +98,8 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
                 # 3. Store (s, a, r, s', done) to "both" replay buffers
                 replay_buffer_truth.add(obs_, ac, rew, next_obs, 
                                         1 if done else 0)
-                replay_buffer_augmented.add(obs_, ac, rew, next_obs, 
-                                        1 if done else 0)
+                #replay_buffer_augmented.add(obs_, ac, rew, next_obs, 
+                #                        1 if done else 0)
 
                 if done:
                     obs_, _ = env.reset()
@@ -108,10 +108,10 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
                     
                 # =========== Model-based section ==============
                 # 4. Train the environment model
-                if step_count % hyperparams['learn_env_model_every'] == 0 and usemodel:
+                if step_count % hyperparams['learn_env_model_every'] == 0 and self.usemodel:
                     if step_count >= hyperparams['learn_env_model_after']:
-                        max_model_iter = 200
-                        for _ in range(max_model_iter):
+                        max_model_iter = 250
+                        for model_iter in range(max_model_iter):
                             # Sample a batch of data from truth replay buffer
                             obs_batch_tensor, ac_batch_tensor, rews_batch_tensor, \
                                 next_obs_batch_tensor, done_batch_tensor = replay_buffer_truth.sample(self.batch_size)
@@ -125,7 +125,7 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
                             else:
                                 env_model_data_loss = 0.95 * env_model_data_loss + 0.05 * train_report['Env Training Loss']
                             
-                            if env_model_data_loss < hyperparams['env_model_loss_thresh']:
+                            if model_iter > 10 and env_model_data_loss < (hyperparams['env_model_loss_thresh'] / 10):
                                 break
 
                         print(f"env_model_data_loss: {env_model_data_loss}, env_model_loss_thresh: {hyperparams['env_model_loss_thresh']}")
@@ -135,6 +135,8 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
                 #if len(self.replay_buffer.buffer) > self.batch_size:
                 if step_count >= self.update_after and (step_count % self.update_every == 0):
                     # Perform n updates (currently set it the same number as the update_every)
+                    c_loss_list = []
+                    a_loss_list = []
                     c_loss_avg = 0
                     a_loss_avg = 0
                     actor_update_count = 0
@@ -145,20 +147,24 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
                         c_loss, a_loss = rl_agent.update(obs_batch_tensor, ac_batch_tensor, 
                                                          rews_batch_tensor, next_obs_batch_tensor, 
                                                          done_batch_tensor)
+                        c_loss_list.append(c_loss)
                         c_loss_avg += c_loss
                         if a_loss is not None:
                             actor_update_count += 1
                             a_loss_avg += a_loss
+                            a_loss_list.append(a_loss)
 
                     c_loss = c_loss_avg / self.update_every
                     a_loss = a_loss_avg / actor_update_count
-                    self.logger.log_actor_critic_loss(a_loss, c_loss, step_count)
+                    c_loss_std = np.std(c_loss_list)
+                    a_loss_std = np.std(a_loss_list) if actor_update_count > 0 else 0
+                    self.logger.log_actor_critic_loss(a_loss, a_loss_std, c_loss, c_loss_std, step_count)
                     # TODO: sum loss?
                     #print(f"c_loss: {c_loss}, a_loss: {a_loss}")
                 
                 # =========== Model-based section ==============
                 # 6. If model is accurate enough, use it to augment the augment replay buffer and train the agent
-                if step_count % hyperparams['learn_env_model_every'] == 0 and step_count >= hyperparams['learn_env_model_after'] and usemodel:
+                if step_count % hyperparams['learn_env_model_every'] == 0 and step_count >= hyperparams['learn_env_model_after'] and self.usemodel:
                     #print(f"env_model_data_loss: {env_model_data_loss}, env_model_loss_thresh: {hyperparams['env_model_loss_thresh']}")
                     if env_model_data_loss < hyperparams['env_model_loss_thresh']:
                         # num interaction
@@ -191,7 +197,7 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
                         c_loss_avg = 0
                         a_loss_avg = 0
                         actor_update_count = 0
-                        for _ in range(100):
+                        for _ in range(20):
                             # 1. Sample a batch of data from replay buffer
                             obs_batch_tensor, ac_batch_tensor, rews_batch_tensor, next_obs_batch_tensor, done_batch_tensor \
                                 = replay_buffer_augmented.sample(self.batch_size)
@@ -205,18 +211,18 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
 
                         c_loss = c_loss_avg / self.update_every
                         a_loss = a_loss_avg / actor_update_count
-                        self.logger.log_actor_critic_loss(a_loss, c_loss, step_count)
+                        #self.logger.log_actor_critic_loss(a_loss, c_loss, step_count)
                         # TODO: sum loss?
                         #print(f"c_loss: {c_loss}, a_loss: {a_loss}")
                         
                         # Immediatedly discard the simulated part from augmented replay buffer
-                        replay_buffer_augmented.trim(replay_buffer_truth.size)
+                        replay_buffer_augmented.trim(0)
                 # ==============================================
                 
                 
                 # Test/Evaluate the agent with test_env (run for 5 episodes)
                 # TODO: Check time to evaluate
-                if step_count % 1500 == 0:
+                if step_count % 500 == 0:
                     self._evaluate_agent(rl_agent, test_env, num_episodes=5, step_idx=step_count)
 
 
@@ -241,8 +247,9 @@ class MBRL_Trainer(MBRL_TrainerBase): # Twin Delayed DDPG
 
             total_rewards.append(episode_reward)
 
-        avg_reward = np.mean(total_rewards)
+        reward_avg = np.mean(total_rewards)
+        reward_std = np.std(total_rewards)
         avg_length = total_steps / num_episodes
 
-        self.logger.log_reward(avg_reward, step_idx)
-        print(f"Test episode reward avg: {avg_reward}, Test episode length avg: {avg_length}")
+        self.logger.log_reward(reward_avg, reward_std, step_idx)
+        print(f"Step_idx: {step_idx}. Test episode reward avg: {reward_avg}, Test episode length avg: {avg_length}")
